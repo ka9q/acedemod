@@ -1,0 +1,259 @@
+<title>ACE RTSW Telemetry Demodulator</title>
+
+<h1>
+ACE RTSW Telemetry Demodulator v3.0.2 (3 Jan 2000)</h1>
+This <a href="acedemod-3.0.2.tar.gz">package</a>
+implements a pure software demodulator and decoder for the S-band 434 bps
+<a href="http://sec.noaa.gov/ace/ACErtsw_home.html">Real
+Time Solar Wind</a> telemetry stream from the <a href="http://www.srl.caltech.edu/ACE/">Advanced
+Composition Explorer</a> (ACE) spacecraft located at the L1 libration point
+between the earth and sun.
+<p>I wrote this code to help
+<a href="http://www.sec.noaa.gov/">NOAA</a>,
+the operator of the spacecraft, close coverage gaps with additional groundstations
+around the world. They didn't have the budget to buy the necessary hardware
+decoders, so I volunteered to do it in software to demonstrate the powerful
+digital signal processing that can now be done on garden-variety PCs.
+<h2>
+Demodulating the Signal</h2>
+
+The program <b>acedemod</b> performs the demodulation.&nbsp; It expects
+a baseband manchester-encoded receive signal sampled at 9600 Hz with 16
+bits per sample, in signed little-endian (PC) byte order. Another sample rate
+can be specified with the -s or --sample-rate command line option.
+
+(The Linux <b>brec</b>
+utility can be used to read from the sound card and pipe its output to
+the input of <b>acedemod</b>).
+<p>The demodulator takes three options:
+<br><b>-d|--debug</b> to specify the debug level;
+<br><b>-f|--full-frame </b>to specify full frame output, including sync and RS parities
+(normally only the data is output)
+<br><b>-m|--no-mmx</b> to disable the automatic use of MMX, if present (x86 machines
+only)
+<br><b>-s|--sample-rate</b> to specify the input sample rate (default 9600 Hz).
+<br><b>-o|--no-offset</b> disables repeated decoding attempts with increasing
+subcarrier phase offsets on frames that do not initially decode
+<br><b>-v|--no-mmx-vd</b> disables the MMX version of the Viterbi decoder
+without totally disabling the use of MMX instructions.
+<p>The program as supplied simply demodulates the data and sends it to
+standard output; comments in the source indicate where code can be added
+to further format the data and send it over the Internet to a central collection
+point as desired.
+<p>Note that <b>acedemod</b> expects its input at baseband. It assumes
+that a receiver with a PLL is tracking the residual carrier on the spacecraft
+downlink and downconverting the signal to audio with the carrier at zero
+frequency. A to-do project is to implement such a receiver in DSP that
+can be run in a UNIX pipe ahead of
+<b>acedemod</b>, thus allowing the RF
+equipment to consist merely of a fixed-frequency downconverter that shifts
+the composite telemetry to within the passband of a standard PC sound card's
+A/D converter.
+<h2>
+Generating Test Signals</h2>
+The program <b>gensig</b> is provided to generate a test signal in the
+ACE format. I wrote it because the SNR on the test tapes I was given was
+so high that I never had a chance to see how my demodulator worked at low
+SNR. The <b>gensig</b> program reads data from standard input, encodes
+and bi-phase modulates this data into 16-bit signed little-endian baseband
+audio samples and sends them to standard output in a format that can be
+piped directly into <b>acedemod</b>. Noise can be added to simulate any
+desired Eb/No ratio.
+
+<b>gensig</b> is invoked as follows:
+<p><b>gensig [-a amplitude] [-f subcarrier freq] [-e ebno] [-s samplerate]</b>
+<p>where the amplitude is the peak signal output amplitude in sample units
+(32767 being full scale for signed 16-bit samples), the subcarrier frequency
+defaults to 996 Hz (and probably shouldn't be changed), and the ebno is
+specified in decibels (default 10 dB, a very strong signal).
+<p>The coding used here will operate pretty solidly down to EbNo = 3dB,
+and will start breathing hard below that. At about 2.6-2.7 dB, you'll start
+to see a few RS blocks that cannot be corrected. Below 2.5 dB, lots of
+blocks are lost. This steep error curve is typical of systems with strong
+FEC.
+<h2>
+ACE Telemetry Format</h2>
+Here we get into the gory details of the telemetry format and how I decode
+it. The CCSDS telemetry stream is formed as follows:
+<p><al>
+<li>
+Each fixed-size RTSW frame contains 6912 bits (864 bytes) of user telemetry
+data.</li>
+
+<li>
+To this is appended 1024 bits (128 bytes) of parity information from a
+(248,216) Reed-Solomon code over GF(256) derived by shortening the CCSDS
+standard (255,223) RS code and applying 4-way interleaving. This produces
+7936 bits (992 bytes).</li>
+
+<li>
+A 32-bit CCSDS-standard sync vector (0x1acffc1d) is added to the front
+of the RS-coded block, producing 7968 bits (996 bytes). Note that the sync
+vector is not included in the Reed-Solomon codeword.</li>
+
+<li>
+The resulting data frame, including the sync vector, is run through a rate
+1/2 constraint length 7 convolutional encoder, producing 15936 channel
+symbols.</li>
+
+<li>
+The output of the convolutional encoder is biphase-level (Manchester II)
+encoded.</li>
+
+<li>
+The biphase-encoded signal phase-shift-keys the main S-band beacon with
+a phase shift of about +/-64 degrees. This leaves substantial residual
+carrier for receiver tracking.</al></li>
+
+<h2>
+Telemetry FEC</h2>
+The Reed-Solomon coding, the sync vector and the convolutional encoder
+are all specified by <a href="http://www.ccsds.org/">CCSDS standards</a>,
+specifically
+<a href="http://public.ccsds.org/publications/archive/131x0b1.pdf">
+CCSDS 131.0-B1: TM Synchronization and Channel Coding</a>.
+
+I started with my own Viterbi and Reed-Solomon decoders, but found I had
+to make several changes.
+<p>I had already implemented a Viterbi decoder for the CCSDS k=7 r=1/2
+polynomials, but the CCSDS convention for the polarity and order of the
+two symbols for each input bit was different. This was a relatively straightforward
+change.
+<p>The Reed-Solomon decoder took more work. The CCSDS standard calls for
+a "dual basis" representation of the 8-bit symbols. I implemented this
+with a pair of 256-byte lookup tables, one to convert from dual-basis to
+conventional representation before decoding, and an inverse table to convert
+back to dual-basis after decoding. The CCSDS standard also specifies a
+palindromic generator polynomial; this by itself was relatively easy to
+accomodate. A bigger problem was that the roots of the CCSDS generator
+polynomial are not consecutive, and in my decoder I had assumed they always
+would be. I made the necessary generalizations to support this.
+<h3>
+Synchonization</h3>
+The actual demodulation takes significant advantage of the structure of
+the ACE telemetry frame. I start by generating a local replica of the convolutionally
+encoded, manchester-modulated 32-bit sync vector and dragging that across
+16 seconds worth of raw data looking for the biggest correlation peak.
+But because of the 7-bit memory of the convolutional encoder, the first
+14 channel symbols out of the convolutional encoder when the sync vector
+begins transmission are "contaminated" by the last few bits of the preceeding
+telemetry frame. So I actually look only for the trailing (32-7) * 2 =
+50 symbols of the encoded sync vector. This still leaves sufficient energy
+(nearly 16 dB SNR) for reliable detection at an operating EbNo of 2.5 dB.
+<p>The sync vector correlator is quite compute intensive, especially on
+the initial acquisition where a full 16 second window must be searched.
+Version 2.0 of <b>acedemod</b> automatically uses the Intel MultiMedia
+eXtensions (MMX) instructions, if available, to speed this operation substantially.
+<h3>
+Carrier Recovery and Demodulation</h3>
+Since the ACE telemetry frame is exactly 16 seconds long, I
+<i>know</i>
+that a sync vector will be somewhere in my 16 second search window -- if
+it's there at all. So when I find the peak correlation peak in the 16 second
+search window, I skip ahead 16 seconds and find the biggest correlator
+peak in a much smaller window (e.g., +/- 100 samples) looking for the next
+sync vector -- the window allowing for frequency errors in the sound card
+and/or spacecraft. Once I have these two peaks, I can quickly compute the
+symbol clock frequency referred to the A/D converter clock. And since I
+know that there are exactly 15936 symbols between these two peaks, I simply
+interpolate the clock through the frame to undo the Manchester encoding
+and to produce soft decision samples for the Viterbi decoder.
+<h3>
+Viterbi Decoding</h3>
+One could use a continuous stream-mode Viterbi decoder on this signal at
+this point, but it seemed more elegant to use a packet-mode decoder modified
+to account for the known starting and terminal states of the convolutional
+encoder at the transmitter. (The starting state is the last 7 bits of the
+sync vector at the front of the frame, and the terminal state is the first
+7 bits of the sync vector at the start of the next frame.) This turned
+out to be a relatively trivial change to my existing packet-mode Viterbi
+decoder.
+<p>Version 3.0 of <b>acedemod</b> includes a Viterbi decoder that
+uses MMX instructions, if available.
+The speedup is approximately 3x on the Intel Pentium-II
+and somewhat less on MMX-enabled Pentiums and AMD K-6s.
+<h3>
+Reed-Solomon Decoding</h3>
+Once the Viterbi decoder has done its job, the decoded symbols are 4-way
+deinterleaved for the Reed-Solomon decoding step. Since each RS block has
+32 parity symbols, up to 16 errors can be corrected in each of the 4 RS
+blocks in the telemetry frame. If more than 16 errors occur, the error
+count is set to -1 to indicate that the frame is uncorrectible.
+<p>If at least one of the RS blocks decodes successfully, the demodulator
+assumes that it synchronized correctly and it proceeds to search for the
+trailing sync vector at the end of the next frame using the same narrow
+search used to find the vector that ended the current frame. But if none
+of the RS blocks decoded, the demodulator assumes this was due to a loss
+of synchronization so it repeats the full 16-second sync vector search
+procedure. This is by far the most CPU-intensive part of the demodulator.&nbsp;
+Version 2.0 of the demodulator uses the Intel MMX (Multi-Media eXtensions)
+instructions, if available and enabled, to speed up this step.
+
+<h3>Offset Searching</h3>
+
+If the telemetry frame does not fully decode on the first try (i.e.,
+one or more of the Reed-Solomon blocks does not decode), then acedemod
+will attempt to repeat the demodulation and decoding process after
+making small adjustments to the subcarrier phase. The offsets
+alternate in sign and increase in magnitude until either the frame
+fully decodes or the magnitude of the phase offset reaches an upper
+limit (less than one A/D sample).
+
+<p>Since the sync vector correlator can only estimate subcarrier
+phase to the nearest A/D sample, this technique is especially beneficial
+with low A/D sampling rates. It can be disabled with the <b>-o</b> or
+<b>--no-offset</b> command line option.
+
+<h3>
+Further Experiments with Iterative Decoding</h3>
+I have experimented a bit with some of the iterative decoding techniques
+that can be applied to a concatenated Reed-Solomon/convolutional scheme
+like this one. (These are not in the released code, though.) One trick
+is <i>error forecasting</i>, based on the fact that when a Viterbi decoder
+makes an error, it usually makes a burst of them several constraint lengths
+long. This is several Reed-Solomon symbols for the parameters used here.
+Because of the interleaving, these bursts will be spread across different
+Reed-Solomon codewords (in fact, this is precisely the reason for the interleaving).
+<p>Sometimes some but not all of the RS blocks in the frame will decode.
+When this happens, the RS decoder can tell you where it found and corrected
+errors in the blocks that did decode (it cannot tell you anything about
+the blocks that didn't decode, though). But with this information, and
+the knowledge that a RS decoder can correct up to twice as many errors
+if you can tell it in advance <i>where</i> the errors are, you can try
+telling the RS decoder to try the failed block(s) again, this time marking
+as erasures the symbols corresponding to those that were successfully corrected
+in the adjacent blocks.
+<p>This works often enough to give you a few tenths of a dB of improvement
+in Eb/No performance, but you have to be careful. Every time you erase
+RS symbols before decoding a block, you increase the chances of the decoder
+succeeding but you also increase its chances of making an undetected error!
+For this reason I have not released the iterative decoding stuff until
+I can further characterize its undetected error rate.
+<p>Another form of iterative decoding involves repeating the Viterbi decoder
+step. It's known that a Viterbi decoder is less likely to make errors when
+decoding in the vicinity of data it already knows (such as the first or
+last few bits of a frame with known starting and terminal encoder states).
+We can apply the same principle to RS code blocks that fail to decode when
+they're straddled by RS blocks that did decode. We simply use the decoded
+RS data (which is highly reliable because of the redundancy in that code)
+to "pin" the Viterbi decoder in a second run over the data that didn't
+decode. In this case, I actually perform 248 separate runs of the Viterbi
+decoder, one for each byte in the failed RS frame. I used the same feature
+I had already added to the Viterbi decoder to handle the non-zero starting
+and terminal encoder states in the first decoding pass on the frame.
+<p>Surprisingly enough, this technique seemed to help little, if at all.
+The Viterbi decoder almost never "changed its mind" when given firm knowledge
+of the adjacent data. The one exception occurred occasionally in the very
+last byte of the frame. It turned out that I had made a fencepost error
+in my original Viterbi decoding pass (the terminal state was shifted off
+by one bit), but I was giving it the correct terminal state in the redecoding
+pass. Funny how FEC can sometimes be so strong that it even corrects for
+programming errors!
+<p>This is somewhat consistent with the literature, which gives a much
+smaller EbNo improvement (.1-.2 dB) for the iterated Viterbi decoding with
+state pinning than for the iterated Reed-Solomon coding.
+<p>Copyright 1999 Phil Karn, KA9Q
+<br>This software may be used under the terms of the GNU Public License.
+<p>Updated: 19 June 2006
+</body>
+</html>
